@@ -2,7 +2,6 @@ from fastapi import FastAPI, Depends
 
 import logging.config
 from fastapi.responses import JSONResponse
-from .database import db_conn
 
 
 """Debugging Setting"""
@@ -25,14 +24,12 @@ app = FastAPI(
 
 
 
-db = db_conn.Database()
 
 
 
 # This path is for health check or test
 @app.get("/")
 async def root():
-    connection =  db.get_connection()
     return {"Connect FU"}
 
 
