@@ -36,6 +36,13 @@ def get_db_connection():
 
 def close_db_connection(conn):
     connection_pool.putconn(conn)
+    """
+    연결 반환 (close_db_connection):
+
+    작업이 완료되면 close_db_connection 함수를 호출하여 연결을 반환합니다.
+    이때 실제로 연결이 닫히지 않고, 연결 풀이 연결을 재사용할 수 있도록 준비 상태로 돌려놓습니다.
+    connection_pool.putconn(conn)을 호출하여 연결을 반환합니다.
+    """
 
 # 예외 처리 및 연결 반환을 보장하기 위해 context manager 사용
 async def handle_database_operation():
