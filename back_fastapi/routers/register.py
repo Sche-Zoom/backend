@@ -1,7 +1,7 @@
 import hashlib
 from datetime import datetime
 import base64
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from routers.util.db_conn import get_db_connection
 import bcrypt

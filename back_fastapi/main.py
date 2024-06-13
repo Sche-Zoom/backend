@@ -1,18 +1,22 @@
-from fastapi import FastAPI, Depends
-
-import logging.config
-from fastapi.responses import JSONResponse
-
-
-"""Debugging Setting"""
 import uvicorn
+import os
+import sys
+import logging.config
+from datetime import timedelta  
+"""Debugging Setting"""
 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 logger = logging.getLogger("Fast API in Sceh-Zoom")
 # Set logger name to project
 logger.info("START Application")
 
 
+
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.responses import JSONResponse
+from routers import register, login
 
 
 # Define Fast api and description
@@ -33,13 +37,6 @@ async def root():
     return {"Connect FU"}
 
 
-
-
-    
-    
-    
-    
-    
-# app.include_router(register.router, prefix="/sign/register", tags=["register"])
-# app.include_router(grammar_state.router, prefix="/grammar_state", tags=["grammar_state"])
-# app.include_router(word_collection.router, prefix="/word_collection", tags=["word_collection"])
+# 각 라우터를 애플리케이션에 등록
+app.include_router(register.router, prefix="/register", tags=["register"])
+app.include_router(login.router, prefix="/login", tags=["login"])

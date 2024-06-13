@@ -21,6 +21,10 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     access_token = create_access_token(data={"sub": user["username"], "uid": user["uid"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
+
+
+
+
 @router.post("/logout")
 async def logout(token: str = Depends(oauth2_scheme)):
     try:
@@ -31,6 +35,12 @@ async def logout(token: str = Depends(oauth2_scheme)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while logging out"
         )
+        
+        
+        
+        
+        
+        
 
 def authenticate_user(username: str, password: str):
     conn = get_db_connection()
