@@ -1,48 +1,37 @@
-from fastapi import FastAPI, Depends
-
-import logging.config
-from fastapi.responses import JSONResponse
-from .database import db_conn
-
-
-"""Debugging Setting"""
 import uvicorn
+import os
+import sys
+import logging.config
+from datetime import timedelta
 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-logger = logging.getLogger("Fast API in Sceh-Zoom")
-# Set logger name to project
+logger = logging.getLogger("Fast API in rich_schedule")
 logger.info("START Application")
 
+from fastapi import FastAPI, Security, HTTPException, status, APIRouter, Query
+from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
+from routers import register, login, per_schedule
+from typing import List, Optional
 
-
-
-# Define Fast api and description
 app = FastAPI(
-    title="Fast API in Sceh-Zoom",
-    description="Fast API in Sceh-Zoom",
+    title="Fast API in rich_schedule",
+    description="Fast API in rich_schedule",
     version="0.0.1",
 )
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-
-db = db_conn.Database()
-
-
-
-# This path is for health check or test
+# Define the root endpoint
 @app.get("/")
-async def root():
-    connection =  db.get_connection()
-    return {"Connect FU"}
+async def some_method():
+    return {"message": "OK"}
+
+# 각 라우터를 애플리케이션에 등록
+app.include_router(register.router, prefix="/api/sign/register", tags=["register"])
+app.include_router(login.router, prefix="/api/sign/login", tags=["login"])
+app.include_router(per_schedule.router, prefix="/api/per-schedule")
 
 
-
-
-    
-    
-    
-    
-    
-# app.include_router(register.router, prefix="/sign/register", tags=["register"])
-# app.include_router(grammar_state.router, prefix="/grammar_state", tags=["grammar_state"])
-# app.include_router(word_collection.router, prefix="/word_collection", tags=["word_collection"])
+if __name__ == "__main__":
+    uvicorn.run(app, host="localhost", port=8000)
