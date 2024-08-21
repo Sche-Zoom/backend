@@ -1,27 +1,27 @@
-
-
 from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import HTTPException, status
-from routers.util.db_conn import get_db_connection, close_db_connection
+from db.db_conn import get_db_connection, close_db_connection
+from jwt import PyJWTError
 
 # JWT 설정 상수
 SECRET_KEY = "JeonKinSong"  # 실제 시크릿 키로 교체
 ALGORITHM = "HS256"  # 사용하고자 하는 알고리즘으로 교체
-ACCESS_TOKEN_EXPIRE_MINUTES = 30  # 토큰 만료 시간 (분)
+ACCESS_TOKEN_EXPIRE_MINUTES = 60  # 토큰 만료 시간 (분)
 
 def create_access_token(data: dict):
-    """
-    JWT 액세스 토큰을 생성하는 함수
-    :param data: 토큰에 포함할 사용자 데이터 (딕셔너리 형식)
-    :return: 생성된 JWT 토큰 (문자열 형식)
-    """
-    to_encode = data.copy()  # 원본 데이터를 복사
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)  # 만료 시간 설정
-    to_encode.update({"exp": expire})  # 만료 시간을 데이터에 추가
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)  # JWT 토큰 생성
-    save_token_to_db(encoded_jwt, data["uid"], expire)  # PostgreSQL에 토큰 저장
+    to_encode = data.copy()
+    # 현재 UTC 시간 + 만료 시간 (60분)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    
+    # 디버깅용 출력
+    print(f'Token: {encoded_jwt}, Expiration Time: {expire}')
+    
+    save_token_to_db(encoded_jwt, data["uid"], expire)
     return encoded_jwt
+
 
 def verify_token(token: str):
     """
@@ -35,25 +35,29 @@ def verify_token(token: str):
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])  # JWT 토큰 디코딩 및 페이로드 추출
-        if is_token_blacklisted(token):  # 토큰이 블랙리스트에 있는지 확인
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        # print(payload)
+        if is_token_blacklisted(token):
             raise credentials_exception
         return payload
-    except jwt.exceptions.ExpiredSignatureError:  # 토큰이 만료된 경우
+    except jwt.exceptions.ExpiredSignatureError as e:
+        print(f"Expired token: {e}")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_401_UNAUTHORIZED, 
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except jwt.exceptions.JWTError:  # 기타 JWT 오류
+    except PyJWTError as e:
+        print(f"JWT Error: {e}")
         raise credentials_exception
+
 
 def save_token_to_db(token: str, uid: int, expires_at: datetime):
     """
     PostgreSQL 데이터베이스에 토큰을 저장하는 함수
     :param token: 저장할 JWT 토큰 (문자열 형식)
     :param uid: 사용자 ID (정수형)
-    :param expires_at: 토큰 만료 시간 (datetime 형식)
+    :param expires_at: 토큰 만료 시간 (datetime 형식, UTC 기준)
     """
     conn = get_db_connection()  # 데이터베이스 연결
     cur = conn.cursor()
@@ -84,6 +88,7 @@ def is_token_blacklisted(token: str):
             (token,)
         )  # 블랙리스트 테이블에서 토큰 존재 확인 쿼리 실행
         result = cur.fetchone()  # 결과 가져오기
+        
         return result is not None  # 결과가 있으면 블랙리스트에 있음
     finally:
         cur.close()  # 커서 닫기
