@@ -31,12 +31,19 @@ class CreateSchedule(BaseModel):
     reminders: Optional[List[int]] = Field(None, example=[180, 2400], description="List of reminder times in minutes before the event")
     reminder_email_noti: Optional[bool] = Field(None, example=True, description="Whether to send email notifications")
 
+
 class CreateScheduleResponse(BaseModel):
     id: int = Field(..., example=123456, description="Unique ID of the created schedule")
+    
+    
+    
+    
+    
 # 스케줄 날짜 정보 스키마
 class ScheduleDate(BaseModel):
     start_date: datetime = Field(..., example="2024-05-15T12:00:00Z", description="Start date and time of the schedule")
     end_date: datetime = Field(..., example="2024-05-15T13:00:00Z", description="End date and time of the schedule")
+
 
 # 개별 스케줄 조회 응답 아이템 스키마
 class ScheduleResponseItem(BaseModel):
@@ -48,3 +55,27 @@ class ScheduleResponseItem(BaseModel):
 # 스케줄 응답 스키마
 class ScheduleResponse(BaseModel):
     schedules: List[ScheduleResponseItem] = Field(..., description="List of schedules matching the criteria")
+
+
+# Tag 기본 정보 스키마
+class Tag(BaseModel):
+    id: int = Field(..., example=1, description="Unique ID of the tag")
+    name: str = Field(..., example="Meeting", description="Name of the tag")
+
+
+# 그룹 내 Tag 정보를 포함한 그룹 스키마
+class Group(BaseModel):
+    id: int = Field(..., example=24, description="Unique ID of the group")
+    name: str = Field(..., example="Development Team", description="Name of the group")
+    tags: List[Tag] = Field(..., description="List of tags associated with the group")
+
+
+# 모든 Tag와 그룹 내 Tag 목록을 포함한 스키마
+class TotalTags(BaseModel):
+    per_tags: List[Tag] = Field(..., description="List of personal tags")
+    groups: List[Group] = Field(..., description="List of groups with associated tags")
+
+
+# Tag 응답 스키마
+class TotalTagsResponse(BaseModel):
+    data: TotalTags = Field(..., description="Data containing all personal and grouped tags")
