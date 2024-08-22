@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleResponse
+from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleResponse, TotalTags, TotalTagsResponse, Tag
 from routers.util.jwt import verify_token
 from db.db_conn import get_db_connection, close_db_connection
 from .util.auth import extract_user_id_from_token
-from .util.utils import parse_iso_date
+from .util.utils import parse_iso_date, check_per_tags, check_group_tags
 from fastapi.security import OAuth2PasswordBearer
 import psycopg2
 from typing import List, Optional
@@ -196,4 +196,46 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
 
 ## 2-8. =진행예정= total_groups 조회
 
-## 2-9. =진행예정= total_tags 
+## 2-9. total_tags 
+@router.get("/total-tags", response_model=TotalTagsResponse)
+async def total_tags(
+    token: str = Depends(oauth2_scheme)
+):
+    # JWT 토큰 검증 및 사용자 ID 추출
+    try:
+        uid = extract_user_id_from_token(token)
+    except HTTPException as e:
+        print(f"HTTPException occurred: {e.detail}")
+        raise e
+    except Exception as e:
+        print(f"An unexpected error occurred: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal error occurred."
+        )
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # 개인 태그 가져오기
+        personal_tags = check_per_tags(uid)
+        per_tags = [Tag(id=t[0], name=t[1]) for t in personal_tags]
+
+        # 그룹 정보는 아직 정의되지 않았으므로 빈 리스트로 반환
+        group_list = []
+
+        # TotalTags 객체 생성
+        total_tags = TotalTags(per_tags=per_tags, groups=group_list)
+        
+        # TotalTagsResponse 객체로 감싸서 반환
+        response = TotalTagsResponse(data=total_tags)
+        return response
+    except Exception as e:
+        print(f"Error fetching total tags: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch total tags."
+        )
+    finally:
+        cur.close()
+        close_db_connection(conn)
