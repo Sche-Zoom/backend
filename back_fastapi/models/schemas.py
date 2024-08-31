@@ -2,6 +2,10 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 from datetime import datetime, time
 
+# 허용된 색상 목록
+ALLOWED_COLORS = ['blue', 'green', 'yellow', 'purple', 'orange', 'mint', 'lavender', 'beige', 'coral']
+
+
 class Repeat(BaseModel):
     interval: str = Field(..., example="weekly", description="Repeat interval: daily, weekly, or monthly")
     until: Optional[str] = Field(None, example="2024-06-30", description="Repeat until this date in YYYY-MM-DD format or null")
@@ -23,14 +27,19 @@ class CreateSchedule(BaseModel):
     title: str = Field(..., example="Meeting with Client", description="Title of the schedule")
     note: Optional[str] = Field(None, example="Discuss project details and deadlines", description="Description of the schedule")
     important: str = Field(..., example="high", description="Important level: very_low, low, medium, high, very_high")
-    color: str = Field(..., example="#FF5733", description="Color of the schedule")
+    color: str = Field(..., example="blue", description="Color keyword for the schedule")
     tags: List[str] = Field(..., example=["Client", "Meeting"], description="List of tags for the schedule")
     start_date: datetime = Field(..., example="2024-05-10T10:00:00Z", description="Start date and time in ISO 8601 format")
     end_date: datetime = Field(..., example="2024-05-10T12:00:00Z", description="End date and time in ISO 8601 format")
     repeat: Optional[Repeat] = Field(None, description="Repeat rule for the schedule")
     reminders: Optional[List[int]] = Field(None, example=[180, 2400], description="List of reminder times in minutes before the event")
     reminder_email_noti: Optional[bool] = Field(None, example=True, description="Whether to send email notifications")
-
+    
+    @field_validator('color')
+    def validate_color(cls, value):
+        if value not in ALLOWED_COLORS:
+            raise ValueError(f"Invalid color: {value}. Allowed colors are {ALLOWED_COLORS}.")
+        return value
 
 class CreateScheduleResponse(BaseModel):
     id: int = Field(..., example=123456, description="Unique ID of the created schedule")
