@@ -71,20 +71,13 @@ class Tag(BaseModel):
     id: int = Field(..., example=1, description="Unique ID of the tag")
     name: str = Field(..., example="Meeting", description="Name of the tag")
 
-
 # 그룹 내 Tag 정보를 포함한 그룹 스키마
 class Group(BaseModel):
     id: int = Field(..., example=24, description="Unique ID of the group")
     name: str = Field(..., example="Development Team", description="Name of the group")
     tags: List[Tag] = Field(..., description="List of tags associated with the group")
 
-
 # 모든 Tag와 그룹 내 Tag 목록을 포함한 스키마
 class TotalTags(BaseModel):
     per_tags: List[Tag] = Field(..., description="List of personal tags")
     groups: List[Group] = Field(..., description="List of groups with associated tags")
-
-
-# Tag 응답 스키마
-class TotalTagsResponse(BaseModel):
-    data: TotalTags = Field(..., description="Data containing all personal and grouped tags")
