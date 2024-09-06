@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleResponse, TotalTags, TotalTagsResponse, Tag
+from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleResponse, TotalTags, Tag
 from routers.util.jwt import verify_token
 from db.db_conn import get_db_connection, close_db_connection
 from .util.auth import extract_user_id_from_token
-from .util.utils import parse_iso_date, check_per_tags, check_group_tags
+from .util.utils import parse_iso_date, check_per_tags, check_color_list
 from fastapi.security import OAuth2PasswordBearer
 import psycopg2
 from typing import List, Optional
@@ -34,7 +34,7 @@ async def list_schedules(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An internal error occurred."
         )
-
+    
     # 날짜 형식 검증 및 변환
     start_date_dt = parse_iso_date(start_date)
     end_date_dt = parse_iso_date(end_date)
@@ -98,12 +98,28 @@ async def list_schedules(
 ## 2-4. [생성] 개인스케줄 - 일정생성
 @router.post("/create-schedule", response_model=CreateScheduleResponse)
 async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_scheme)):
-    conn = get_db_connection()
-    cur = conn.cursor()
     try:
         # JWT 토큰 검증 및 사용자 ID 추출
         uid = extract_user_id_from_token(token)
+        
+        
+        
+        # 색상 체크
+        if not check_color_list(schedule.color):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid color. Please provide a valid color."
+            )
+            
+        # 날짜 형식 검증 및 변환
+        start_date_dt = parse_iso_date(schedule.start_date)
+        end_date_dt = parse_iso_date(schedule.end_date)
 
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        
         # 일정 테이블에 데이터 삽입
         cur.execute(
             """
@@ -114,8 +130,8 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
                 schedule.title,
                 schedule.note,
                 schedule.color,
-                schedule.start_date,
-                schedule.end_date,
+                start_date_dt,
+                end_date_dt,
                 schedule.important,
                 uid
             )
@@ -196,8 +212,7 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
 
 ## 2-8. =진행예정= total_groups 조회
 
-## 2-9. total_tags 
-@router.get("/total-tags", response_model=TotalTagsResponse)
+@router.get("/total-tags", response_model=TotalTags)
 async def total_tags(
     token: str = Depends(oauth2_scheme)
 ):
@@ -227,9 +242,8 @@ async def total_tags(
         # TotalTags 객체 생성
         total_tags = TotalTags(per_tags=per_tags, groups=group_list)
         
-        # TotalTagsResponse 객체로 감싸서 반환
-        response = TotalTagsResponse(data=total_tags)
-        return response
+        # TotalTags 객체를 직접 반환
+        return total_tags
     except Exception as e:
         print(f"Error fetching total tags: {e}")
         raise HTTPException(

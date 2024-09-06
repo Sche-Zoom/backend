@@ -22,6 +22,30 @@ def parse_iso_date(date_str: str) -> datetime:
         )
 
 
+def check_color_list(color: str) -> bool:
+    """
+    명시해놓은 color list에 입력받은 문자열이 있는지 체크 후 True False를 반환하는 함수
+    Color list : [ blue, green, yello, purple, orange, mint, lavender, beige, coral ]
+    
+    Args:
+        color (str): - 사용자로부터 입력받아오는 색상
+    
+
+    Returns:
+        bool: _description_
+    """
+    color_list = [ 'blue', 'green', 'yello', 'purple', 'orange', 'mint',' lavender', 'beige', 'coral' ]
+    
+    try :
+        if color in color_list :
+            return True
+        else :
+            return False
+    except :
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail = "색상을 지정 할 수 없습니다. 명시된 색상을 입력해주세요."
+        )
 
 
 def check_group_tags(uid):
