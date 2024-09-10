@@ -1,9 +1,20 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import HTTPException, status
 import psycopg2
 from db.db_conn import get_db_connection, close_db_connection
 from typing import List, Tuple
+import dateutil.relativedelta
+import pytz  # 시간대 처리를 위한 모듈
 
+import logging
+
+# Set up logging
+# 로깅 수준을 INFO로 설정하여 DEBUG 메시지를 숨김
+logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.DEBUG)
+
+
+logger = logging.getLogger(__name__)
 def parse_iso_date(date_str: str) -> datetime:
     """
     ISO 8601 형식의 날짜 문자열을 datetime 객체로 변환하는 함수
@@ -75,3 +86,52 @@ def check_per_tags(uid: int) -> List[Tuple[int, str]]:
     finally:
         cur.close()
         close_db_connection(conn)
+        
+        
+        
+
+
+def generate_recurring_events(start_date, frequency, interval, until, count, requested_start, requested_end):
+    occurrences = []
+    current_date = start_date
+    occurrences_count = 0
+
+    # Ensure all datetime objects are timezone-aware
+    if current_date.tzinfo is None:
+        current_date = pytz.utc.localize(current_date)
+    if until is not None and until.tzinfo is None:
+        until = pytz.utc.localize(until)
+    if requested_start.tzinfo is None:
+        requested_start = pytz.utc.localize(requested_start)
+    if requested_end.tzinfo is None:
+        requested_end = pytz.utc.localize(requested_end)
+
+    try:
+        # 종료일 또는 무한 반복일 경우, until이 없으면 요청 종료일로 대체
+        until = until if until else requested_end
+
+        while current_date <= until and (count is None or occurrences_count < count):
+            # 요청된 기간 안에 있는 반복 일정만 추가
+            if current_date >= requested_start and current_date <= requested_end:
+                occurrences.append(current_date)
+
+            # 다음 반복 발생일 계산 (주기와 간격에 따라)
+            if frequency == 'daily':
+                current_date += timedelta(days=interval)
+            elif frequency == 'weekly':
+                current_date += timedelta(weeks=interval)
+            elif frequency == 'monthly':
+                current_date += dateutil.relativedelta.relativedelta(months=interval)
+            elif frequency == 'yearly':
+                current_date += dateutil.relativedelta.relativedelta(years=interval)
+            else:
+                logger.error(f"Invalid frequency: {frequency}")
+                raise ValueError(f"Invalid frequency: {frequency}")
+
+            occurrences_count += 1
+
+    except Exception as e:
+        logger.error(f"Error occurred while generating recurring events: {e}")
+        raise
+
+    return occurrences
