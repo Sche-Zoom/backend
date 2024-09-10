@@ -1,20 +1,35 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleResponse, TotalTags, Tag
+from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleDate, ScheduleResponseItem, ScheduleResponse, TotalTags, Tag
 from routers.util.jwt import verify_token
 from db.db_conn import get_db_connection, close_db_connection
 from .util.auth import extract_user_id_from_token
-from .util.utils import parse_iso_date, check_per_tags, check_color_list
+from .util.utils import parse_iso_date, check_per_tags, check_color_list, generate_recurring_events
 from fastapi.security import OAuth2PasswordBearer
 import psycopg2
 from typing import List, Optional
 from datetime import datetime
+import logging
+import pytz
 
+
+
+# Set up logging
+
+# 로깅 수준을 INFO로 설정하여 DEBUG 메시지를 숨김
+logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.DEBUG)
+
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/sign/token")
 
 
+def ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return pytz.utc.localize(dt)
+    return dt
 
-## 2-1. [ 조회 ] 개인스케줄 - 통합
 @router.get("/list", response_model=ScheduleResponse)
 async def list_schedules(
     start_date: str,
@@ -36,24 +51,23 @@ async def list_schedules(
         )
     
     # 날짜 형식 검증 및 변환
-    start_date_dt = parse_iso_date(start_date)
-    end_date_dt = parse_iso_date(end_date)
-
+    start_date_dt = datetime.fromisoformat(start_date).astimezone(pytz.utc)
+    end_date_dt = datetime.fromisoformat(end_date).astimezone(pytz.utc)
+    
     conn = get_db_connection()
     cur = conn.cursor()
 
     try:
-        # 스케줄 조회 쿼리 작성
+        # 기본 일정 및 반복 일정 조회
         query = """
-            SELECT s.id, s.title, s.color, s.start_date, s.end_date
+            SELECT s.id, s.title, s.start_date, s.end_date, s.color, r.frequency, r.interval, r.until, r.count
             FROM schedule s
+            LEFT JOIN recurrence r ON s.id = r.schedule_id
             WHERE s.uid = %s
-            AND s.start_date >= %s
-            AND s.end_date <= %s
+            AND (s.start_date <= %s AND (s.end_date IS NULL OR s.end_date >= %s))
         """
-        params = [uid, start_date_dt, end_date_dt]
-        print(query, params)
-        # 태그 필터링
+        params = [uid, end_date_dt, start_date_dt]
+
         if tag_ids:
             query += """
                 AND EXISTS (
@@ -68,25 +82,65 @@ async def list_schedules(
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # 결과를 원하는 형식으로 변환
-        schedules = [
-            {
-                "id": row[0],
-                "title": row[1],
-                "color": row[2],
-                "dates": [
-                    {"start_date": row[3].isoformat(), "end_date": row[4].isoformat()}
-                ]
-            }
-            for row in rows
-        ]
+        schedules = []
 
-        return {"schedules": schedules}
+        for row in rows:
+            try:
+                schedule_id, title, start_date, end_date, color, frequency, interval, until, count = row
+                # DB에서 읽어온 데이터 처리
+                start_date = ensure_utc(start_date)
+                end_date = ensure_utc(end_date)
+                until = ensure_utc(until) if until else None
+                requested_start = ensure_utc(start_date_dt)
+                requested_end = ensure_utc(end_date_dt)
+
+                logger.debug(f"Processing schedule_id={schedule_id}, frequency={frequency}, interval={interval}, until={until}, count={count}")
+
+                # 반복 일정이 있는 경우, 해당 기간 동안 발생하는 모든 일정을 계산
+                if frequency:
+                    interval = interval or 1  # interval이 None일 경우 기본값 1로 설정
+                    until = until or end_date_dt  # until이 None이면 요청된 기간의 끝으로 설정
+                    count = count  # count는 None일 수 있음
+
+                    events = generate_recurring_events(
+                        start_date=start_date,
+                        frequency=frequency,
+                        interval=interval,
+                        until=until,
+                        count=count,
+                        requested_start=start_date_dt,
+                        requested_end=end_date_dt
+                    )
+
+                    # 날짜 리스트로 변환
+                    dates = [ScheduleDate(start_date=event, end_date=event + (end_date - start_date)) for event in events]
+
+                    schedules.append(ScheduleResponseItem(
+                        id=schedule_id,
+                        title=title,
+                        color=color,
+                        dates=dates
+                    ))
+                    logger.debug(f"Added event: {schedules[-1]}")
+                else:
+                    # 반복이 아닌 단일 일정 추가
+                    schedules.append(ScheduleResponseItem(
+                        id=schedule_id,
+                        title=title,
+                        color=color,
+                        dates=[ScheduleDate(start_date=start_date, end_date=end_date)]
+                    ))
+                    logger.debug(f"Added single schedule: {schedules[-1]}")
+
+            except Exception as e:
+                logger.error(f"Error processing row {row}: {e}")
+                raise
+
+        return ScheduleResponse(schedules=schedules)
     except Exception as e:
-        print(f"Error retrieving schedules: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve schedules"
+            detail="Failed to retrieve schedules."
         )
     finally:
         cur.close()
@@ -111,10 +165,6 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
                 detail="Invalid color. Please provide a valid color."
             )
             
-        # 날짜 형식 검증 및 변환
-        start_date_dt = parse_iso_date(schedule.start_date)
-        end_date_dt = parse_iso_date(schedule.end_date)
-
 
         conn = get_db_connection()
         cur = conn.cursor()
@@ -130,8 +180,8 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
                 schedule.title,
                 schedule.note,
                 schedule.color,
-                start_date_dt,
-                end_date_dt,
+                schedule.start_date,
+                schedule.end_date,
                 schedule.important,
                 uid
             )
@@ -205,7 +255,73 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
         close_db_connection(conn)
 
 ## 2-5. [ 수정 ] (detail)개인스케줄 - 일정정보
+@router.get("/detail/{schedule_id}", response_model=ScheduleResponse)
+async def detail_schedule(
+    schedule_id: int,
+    token: str = Depends(oauth2_scheme)
+):
+    # JWT 토큰 검증 및 사용자 ID 추출
+    try:
+        uid = extract_user_id_from_token(token)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token."
+        )
 
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        # 기본 일정 및 반복 규칙 조회
+        cur.execute("""
+            SELECT s.id, s.title, s.start_date, s.end_date, s.color, r.frequency, r.interval, r.until, r.count
+            FROM schedule s
+            LEFT JOIN recurrence r ON s.id = r.schedule_id
+            WHERE s.id = %s AND s.uid = %s
+        """, (schedule_id, uid))
+        row = cur.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
+
+        schedule_id, title, start_date, end_date, color, frequency, interval, until, count = row
+        
+        # 반복 일정이 있으면 반복 규칙에 맞게 계산하여 반환
+        if frequency:
+            events = generate_recurring_events(
+                start_date=start_date,
+                frequency=frequency,
+                interval=interval,
+                until=until,
+                count=count,
+                requested_start=start_date,
+                requested_end=end_date
+            )
+            return {
+                "id": schedule_id,
+                "title": title,
+                "start_date": events[0],  # 최초 일정 반환
+                "end_date": events[0] + (end_date - start_date),
+                "color": color
+            }
+        else:
+            return {
+                "id": schedule_id,
+                "title": title,
+                "start_date": start_date,
+                "end_date": end_date,
+                "color": color
+            }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve schedule detail."
+        )
+    finally:
+        cur.close()
+        close_db_connection(conn)
 ## 2-6. [ 수정 ] 개인스케줄 -  일정정보삭제
 
 ## 2-7. [ 조회 ] 개인스케줄 - 알림
