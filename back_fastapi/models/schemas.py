@@ -29,8 +29,8 @@ class CreateSchedule(BaseModel):
     important: str = Field(..., example="high", description="Important level: very_low, low, medium, high, very_high")
     color: str = Field(..., example="blue", description="Color keyword for the schedule")
     tags: List[str] = Field(..., example=["Client", "Meeting"], description="List of tags for the schedule")
-    start_date: datetime = Field(..., example="2024-05-10T10:00:00Z", description="Start date and time in ISO 8601 format")
-    end_date: datetime = Field(..., example="2024-05-10T12:00:00Z", description="End date and time in ISO 8601 format")
+    start_date: datetime = Field(..., example="2024-05-10T10:00:00", description="Start date and time in ISO 8601 format")
+    end_date: datetime = Field(..., example="2024-05-10T12:00:00", description="End date and time in ISO 8601 format")
     repeat: Optional[Repeat] = Field(None, description="Repeat rule for the schedule")
     reminders: Optional[List[int]] = Field(None, example=[180, 2400], description="List of reminder times in minutes before the event")
     reminder_email_noti: Optional[bool] = Field(None, example=True, description="Whether to send email notifications")
@@ -50,8 +50,8 @@ class CreateScheduleResponse(BaseModel):
     
 # 스케줄 날짜 정보 스키마
 class ScheduleDate(BaseModel):
-    start_date: datetime = Field(..., example="2024-05-15T12:00:00Z", description="Start date and time of the schedule")
-    end_date: datetime = Field(..., example="2024-05-15T13:00:00Z", description="End date and time of the schedule")
+    start_date: datetime = Field(..., example="2024-05-15T12:00:00", description="Start date and time of the schedule")
+    end_date: datetime = Field(..., example="2024-05-15T13:00:00", description="End date and time of the schedule")
 
 
 # 개별 스케줄 조회 응답 아이템 스키마
