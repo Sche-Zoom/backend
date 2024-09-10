@@ -156,8 +156,6 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
         # JWT 토큰 검증 및 사용자 ID 추출
         uid = extract_user_id_from_token(token)
         
-        
-        
         # 색상 체크
         if not check_color_list(schedule.color):
             raise HTTPException(
@@ -165,10 +163,8 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
                 detail="Invalid color. Please provide a valid color."
             )
             
-
         conn = get_db_connection()
         cur = conn.cursor()
-        
         
         # 일정 테이블에 데이터 삽입
         cur.execute(
@@ -216,10 +212,11 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
         if schedule.repeat:
             cur.execute(
                 """
-                INSERT INTO recurrence (interval, until, count, schedule_id)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO recurrence (frequency, interval, until, count, schedule_id)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
                 (
+                    schedule.repeat.frequency,
                     schedule.repeat.interval,
                     schedule.repeat.until,
                     schedule.repeat.count,
@@ -253,6 +250,7 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
     finally:
         cur.close()
         close_db_connection(conn)
+
 
 ## 2-5. [ 수정 ] (detail)개인스케줄 - 일정정보
 @router.get("/detail/{schedule_id}", response_model=ScheduleResponse)

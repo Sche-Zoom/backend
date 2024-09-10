@@ -7,9 +7,10 @@ ALLOWED_COLORS = ['blue', 'green', 'yellow', 'purple', 'orange', 'mint', 'lavend
 
 
 class Repeat(BaseModel):
-    interval: str = Field(..., example="weekly", description="Repeat interval: daily, weekly, or monthly")
-    until: Optional[str] = Field(None, example="2024-06-30", description="Repeat until this date in YYYY-MM-DD format or null")
-    count: Optional[int] = Field(None, example=10, description="Number of times to repeat or null for infinite")
+    frequency: str = Field(..., example="daily", description="Frequency of recurrence: daily, weekly, monthly, yearly")
+    interval: int = Field(..., example=1, description="Interval between recurrences")
+    until: Optional[datetime] = Field(None, example="2024-12-31T23:59:59", description="End date for recurrence in ISO 8601 format")
+    count: Optional[int] = Field(None, example=10, description="Number of occurrences")
 
 # Reminder 관련 스키마
 class Reminder(BaseModel):
