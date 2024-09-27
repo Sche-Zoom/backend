@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleDate, ScheduleResponseItem, ScheduleResponse, TotalTags, Tag
+from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleDate, ScheduleResponseItem, ScheduleResponse,UpdateSchedule, UpdateRepeatSchedule, TotalTags, Tag
 from routers.util.jwt import verify_token
 from db.db_conn import get_db_connection, close_db_connection
 from .util.auth import extract_user_id_from_token
@@ -29,7 +29,7 @@ def ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return pytz.utc.localize(dt)
     return dt
-
+# 2-1. [ 조회 ] 개인스케줄 - 통합
 @router.get("/list", response_model=ScheduleResponse)
 async def list_schedules(
     start_date: str,
@@ -251,81 +251,113 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
         cur.close()
         close_db_connection(conn)
 
-
 ## 2-5. [ 수정 ] (detail)개인스케줄 - 일정정보
-@router.get("/detail/{schedule_id}", response_model=ScheduleResponse)
-async def detail_schedule(
-    schedule_id: int,
+@router.patch("/{sid}")
+async def update_schedule(
+    sid: int,
+    schedule_update: UpdateSchedule,
     token: str = Depends(oauth2_scheme)
 ):
-    # JWT 토큰 검증 및 사용자 ID 추출
     try:
+        # JWT 토큰 검증 및 사용자 ID 추출
         uid = extract_user_id_from_token(token)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token."
-        )
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    try:
-        # 기본 일정 및 반복 규칙 조회
-        cur.execute("""
-            SELECT s.id, s.title, s.start_date, s.end_date, s.color, r.frequency, r.interval, r.until, r.count
-            FROM schedule s
-            LEFT JOIN recurrence r ON s.id = r.schedule_id
-            WHERE s.id = %s AND s.uid = %s
-        """, (schedule_id, uid))
-        row = cur.fetchone()
-
-        if not row:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
-
-        schedule_id, title, start_date, end_date, color, frequency, interval, until, count = row
         
-        # 반복 일정이 있으면 반복 규칙에 맞게 계산하여 반환
-        if frequency:
-            events = generate_recurring_events(
-                start_date=start_date,
-                frequency=frequency,
-                interval=interval,
-                until=until,
-                count=count,
-                requested_start=start_date,
-                requested_end=end_date
-            )
-            return {
-                "id": schedule_id,
-                "title": title,
-                "start_date": events[0],  # 최초 일정 반환
-                "end_date": events[0] + (end_date - start_date),
-                "color": color
-            }
-        else:
-            return {
-                "id": schedule_id,
-                "title": title,
-                "start_date": start_date,
-                "end_date": end_date,
-                "color": color
-            }
+        # DB 연결
+        conn = get_db_connection()
+        cur = conn.cursor()
 
+        # 기본 일정 정보 수정
+        update_fields = []
+        update_values = []
+
+        if schedule_update.title:
+            update_fields.append("title = %s")
+            update_values.append(schedule_update.title)
+        
+        if schedule_update.note:
+            update_fields.append("note = %s")
+            update_values.append(schedule_update.note)
+        
+        if schedule_update.color:
+            update_fields.append("color = %s")
+            update_values.append(schedule_update.color)
+        
+        if schedule_update.start_date:
+            update_fields.append("start_date = %s")
+            update_values.append(schedule_update.start_date)
+        
+        if schedule_update.end_date:
+            update_fields.append("end_date = %s")
+            update_values.append(schedule_update.end_date)
+        
+        if schedule_update.important:
+            update_fields.append("important = %s")
+            update_values.append(schedule_update.important)
+
+        if update_fields:
+            update_query = f"""
+                UPDATE schedule 
+                SET {", ".join(update_fields)}, updated_at = NOW()
+                WHERE id = %s AND uid = %s
+            """
+            update_values.extend([sid, uid])
+            logger.info(f"Executing update query: {update_query} with values: {tuple(update_values)}")
+            cur.execute(update_query, tuple(update_values))
+
+        # 태그 수정
+        if schedule_update.tags is not None:  # None 체크
+            cur.execute("DELETE FROM schedule_tag WHERE schedule_id = %s", (sid,))
+            for tag in schedule_update.tags:
+                # tag는 이제 문자열이므로, 태그 ID를 직접 추가하는 방식으로 변경 필요
+                cur.execute("INSERT INTO schedule_tag (tag_id, schedule_id) VALUES ((SELECT id FROM tags WHERE name = %s), %s)", (tag, sid))
+        # 알림 수정
+        if schedule_update.reminders:
+            logger.info(f"Updating reminders: {schedule_update.reminders}")
+            cur.execute("DELETE FROM reminder WHERE schedule_id = %s", (sid,))
+            for reminder in schedule_update.reminders:
+                logger.info(f"Inserting reminder: {reminder}")
+                cur.execute("INSERT INTO reminder (days_before, schedule_id) VALUES (%s, %s)", (reminder, sid))
+
+        # 반복 일정 정보가 있는 경우
+        if schedule_update.repeat:
+            logger.info(f"Updating recurrence: frequency='{schedule_update.repeat.frequency}' interval={schedule_update.repeat.interval} until={schedule_update.repeat.until} count={schedule_update.repeat.count}")
+            cur.execute(
+                """
+                INSERT INTO recurrence (frequency, interval, until, count, schedule_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (schedule_id) DO UPDATE
+                SET frequency = EXCLUDED.frequency, interval = EXCLUDED.interval, until = EXCLUDED.until, count = EXCLUDED.count
+                """,
+                (
+                    schedule_update.repeat.frequency,
+                    schedule_update.repeat.interval,
+                    schedule_update.repeat.until,
+                    schedule_update.repeat.count,
+                    sid
+                )
+            )
+        conn.commit()
+        return {"status": "success", "message": "Schedule updated successfully"}
+    
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve schedule detail."
-        )
+        logger.error(f"Error occurred: {e}", exc_info=True)  # 에러 로그 기록
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update schedule")
+
     finally:
-        cur.close()
-        close_db_connection(conn)
+        if cur:
+            cur.close()
+        if conn:
+            close_db_connection(conn)
+        
 ## 2-6. [ 수정 ] 개인스케줄 -  일정정보삭제
 
 ## 2-7. [ 조회 ] 개인스케줄 - 알림
 
 ## 2-8. =진행예정= total_groups 조회
 
+##2-9.  total_tags 
 @router.get("/total-tags", response_model=TotalTags)
 async def total_tags(
     token: str = Depends(oauth2_scheme)
@@ -367,3 +399,9 @@ async def total_tags(
     finally:
         cur.close()
         close_db_connection(conn)
+        
+        
+        
+
+
+## 2-10. (detail) 개인 반복 스케줄 - 일정정보
