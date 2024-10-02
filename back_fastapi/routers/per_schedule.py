@@ -405,3 +405,152 @@ async def total_tags(
 
 
 ## 2-10. (detail) 개인 반복 스케줄 - 일정정보
+@router.patch("/repeat/{sid}")
+async def modify_repeat_schedule(
+    sid: int,
+    schedule_update: UpdateRepeatSchedule,  # UpdateRepeatSchedule 모델 사용
+    token: str = Depends(oauth2_scheme)
+):
+    try:
+        # JWT 토큰 검증 및 사용자 ID 추출
+        uid = extract_user_id_from_token(token)
+
+        # DB 연결
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # 현재 날짜 가져오기
+        current_date = datetime.now()
+
+        # 1. only일 경우
+        if schedule_update.modify_type == "only":
+            logger.info(f"Modifying recurrence only for schedule ID {sid}")
+
+            # 중복 확인 쿼리: start_date, end_date, recurrence_id로 확인
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM recurrence_exception 
+                WHERE start_date = %s AND end_date = %s 
+                AND recurrence_id = (SELECT id FROM recurrence WHERE schedule_id = %s)
+                """,
+                (schedule_update.start_date, schedule_update.end_date, sid)
+            )
+            exists = cur.fetchone()[0] > 0
+
+            if not exists:
+                # 중복되지 않으면 삽입
+                cur.execute(
+                    """
+                    INSERT INTO recurrence_exception (exception_date, start_date, end_date, recurrence_id)
+                    VALUES (%s, %s, %s, (SELECT id FROM recurrence WHERE schedule_id = %s))
+                    """,
+                    (current_date, schedule_update.start_date, schedule_update.end_date, sid)
+                )
+            else:
+                logger.info("Recurrence exception already exists, skipping insertion.")
+                return {"status": "success", "message": "Recurrence exception already exists."}
+
+
+            # 해당 스케줄을 새로운 스케줄로 등록 (create-schedule)
+            cur.execute(
+                """
+                INSERT INTO schedule (title, note, important, color, start_date, end_date, uid)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """,
+                (schedule_update.title, schedule_update.note, schedule_update.important, 
+                schedule_update.color, schedule_update.start_date, schedule_update.end_date, uid)
+            )
+            new_schedule_id = cur.fetchone()[0]
+            logger.info(f"New schedule created with ID {new_schedule_id}")
+
+        # 2. after_all일 경우
+        elif schedule_update.modify_type == "after_all":
+            logger.info(f"Modifying recurrence after existing for schedule ID {sid}")
+
+            # 반복 테이블의 end_date 수정
+            cur.execute(
+                """
+                UPDATE recurrence 
+                SET until = %s 
+                WHERE schedule_id = %s
+                """,
+                (schedule_update.start_date, sid)
+            )
+
+            # 수정된 반복 일정을 새로운 스케줄로 등록 (create-schedule)
+            cur.execute(
+                """
+                INSERT INTO schedule (title, note, important, color, start_date, end_date, uid)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """,
+                (schedule_update.title, schedule_update.note, schedule_update.important, 
+                schedule_update.color, schedule_update.start_date, schedule_update.end_date, uid)
+            )
+            new_schedule_id = cur.fetchone()[0]
+            logger.info(f"New schedule created with ID {new_schedule_id}")
+            
+                # (신) 반복 일정 추가
+            if schedule_update.repeat:
+                cur.execute(
+                    """
+                    INSERT INTO recurrence (frequency, interval, until, count, schedule_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        schedule_update.repeat.frequency,
+                        schedule_update.repeat.interval,
+                        schedule_update.repeat.until,
+                        schedule_update.repeat.count,
+                        new_schedule_id
+                    )
+                )
+                logger.info(f"New recurrence created for schedule ID {new_schedule_id}")
+
+            # (신) 알림 기능 추가
+            if schedule_update.reminders:
+                for reminder in schedule_update.reminders:
+                    cur.execute(
+                        """
+                        INSERT INTO reminder (minutes_before, schedule_id)
+                        VALUES (%s, %s)
+                        """,
+                        (reminder, new_schedule_id)
+                    )
+                    logger.info(f"Reminder added: {reminder} minutes before for schedule ID {new_schedule_id}")
+
+            logger.info(f"Schedule modification after_all completed for schedule ID {sid}")
+
+        # 3. all일 경우
+        elif schedule_update.modify_type == "all":
+            logger.info(f"Modifying all recurrences for schedule ID {sid}")
+
+            # 반복 테이블 수정
+            cur.execute(
+                """
+                UPDATE recurrence
+                SET frequency = %s, interval = %s, until = %s, count = %s
+                WHERE schedule_id = %s
+                """,
+                (
+                    schedule_update.repeat.frequency,
+                    schedule_update.repeat.interval,
+                    schedule_update.repeat.until,
+                    schedule_update.repeat.count,
+                    sid
+                )
+            )
+
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid modify_type")
+
+        conn.commit()
+        return {"status": "success", "message": "Repeat schedule modified successfully"}
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error occurred: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to modify repeat schedule")
+
+    finally:
+        cur.close()
+        close_db_connection(conn)
