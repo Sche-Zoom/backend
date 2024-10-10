@@ -30,7 +30,7 @@ async def some_method():
 # 각 라우터를 애플리케이션에 등록
 app.include_router(register.router, prefix="/api/sign/register", tags=["register"])
 app.include_router(login.router, prefix="/api/sign/login", tags=["login"])
-app.include_router(per_schedule.router, prefix="/api/per-schedule")
+app.include_router(per_schedule.router, prefix="/api/per-schedule", tags = ["per_schedule"])
 
 
 if __name__ == "__main__":
