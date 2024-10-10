@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from fastapi import HTTPException, status
 import psycopg2
 from db.db_conn import get_db_connection, close_db_connection
-from typing import List, Tuple
+from typing import List, Tuple,Optional, Set
 import dateutil.relativedelta
 import pytz  # 시간대 처리를 위한 모듈
 
@@ -89,12 +89,28 @@ def check_per_tags(uid: int) -> List[Tuple[int, str]]:
         
         
         
-
-
-def generate_recurring_events(start_date, frequency, interval, until, count, requested_start, requested_end):
+def generate_recurring_events(
+    start_date: datetime, 
+    frequency: str, 
+    interval: int, 
+    until: Optional[datetime], 
+    count: Optional[int], 
+    requested_start: datetime, 
+    requested_end: datetime, 
+    exceptions: Optional[Set[datetime]] = None  # 예외 일정 추가
+) -> List[datetime]:
     occurrences = []
     current_date = start_date
     occurrences_count = 0
+
+    # 예외 일정이 없을 경우 빈 집합으로 초기화
+    if exceptions is None:
+        exceptions = set()
+
+    # 로그: 함수 시작 로그와 입력 데이터 기록
+    logger.info(f"Starting generate_recurring_events with start_date={start_date}, frequency={frequency}, "
+                f"interval={interval}, until={until}, count={count}, requested_start={requested_start}, "
+                f"requested_end={requested_end}, exceptions={exceptions}")
 
     # Ensure all datetime objects are timezone-aware
     if current_date.tzinfo is None:
@@ -109,11 +125,16 @@ def generate_recurring_events(start_date, frequency, interval, until, count, req
     try:
         # 종료일 또는 무한 반복일 경우, until이 없으면 요청 종료일로 대체
         until = until if until else requested_end
+        logger.debug(f"Computed until={until} for the recurring events")
 
         while current_date <= until and (count is None or occurrences_count < count):
-            # 요청된 기간 안에 있는 반복 일정만 추가
+            # 요청된 기간 안에 있는 반복 일정만 추가하고, 예외 일정은 제외
             if current_date >= requested_start and current_date <= requested_end:
-                occurrences.append(current_date)
+                if current_date in exceptions:
+                    logger.debug(f"Skipping exception date: {current_date}")
+                else:
+                    logger.debug(f"Adding occurrence: {current_date}")
+                    occurrences.append(current_date)
 
             # 다음 반복 발생일 계산 (주기와 간격에 따라)
             if frequency == 'daily':
@@ -129,9 +150,13 @@ def generate_recurring_events(start_date, frequency, interval, until, count, req
                 raise ValueError(f"Invalid frequency: {frequency}")
 
             occurrences_count += 1
+            logger.debug(f"Next occurrence calculated: {current_date}")
 
     except Exception as e:
         logger.error(f"Error occurred while generating recurring events: {e}")
         raise
+
+    # 로그: 발생한 모든 일정을 로그에 기록
+    logger.info(f"Generated {len(occurrences)} occurrences, with exceptions excluded: {exceptions}")
 
     return occurrences

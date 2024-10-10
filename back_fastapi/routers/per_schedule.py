@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from models.schemas import Reminder, Repeat, CreateScheduleResponse, CreateSchedule, ScheduleDate, ScheduleResponseItem, ScheduleResponse,UpdateSchedule, UpdateRepeatSchedule, TotalTags, Tag
+from models.schemas import Reminder, CreateScheduleResponse, CreateSchedule, ScheduleDate, ScheduleResponseItem, ScheduleResponse,UpdateSchedule, UpdateRepeatSchedule, TotalTags, Tag
 from routers.util.jwt import verify_token
 from db.db_conn import get_db_connection, close_db_connection
 from .util.auth import extract_user_id_from_token
@@ -49,11 +49,11 @@ async def list_schedules(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An internal error occurred."
         )
-    
+
     # 날짜 형식 검증 및 변환
     start_date_dt = datetime.fromisoformat(start_date).astimezone(pytz.utc)
     end_date_dt = datetime.fromisoformat(end_date).astimezone(pytz.utc)
-    
+
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -87,7 +87,6 @@ async def list_schedules(
         for row in rows:
             try:
                 schedule_id, title, start_date, end_date, color, frequency, interval, until, count = row
-                # DB에서 읽어온 데이터 처리
                 start_date = ensure_utc(start_date)
                 end_date = ensure_utc(end_date)
                 until = ensure_utc(until) if until else None
@@ -100,16 +99,32 @@ async def list_schedules(
                 if frequency:
                     interval = interval or 1  # interval이 None일 경우 기본값 1로 설정
                     until = until or end_date_dt  # until이 None이면 요청된 기간의 끝으로 설정
-                    count = count  # count는 None일 수 있음
 
+                    logger.info(f"Schedule {schedule_id} has recurrence with frequency={frequency}, interval={interval}, until={until}, count={count}")
+
+                    # 예외 일정 조회
+                    cur.execute("""
+                        SELECT start_date FROM recurrence_exception
+                        WHERE recurrence_id = (
+                            SELECT id FROM recurrence WHERE schedule_id = %s
+                        )
+                    """, [schedule_id])
+                    exception_rows = cur.fetchall()
+                    exceptions = {ensure_utc(exception_date[0]) for exception_date in exception_rows}
+
+                    if exceptions:
+                        logger.info(f"Schedule {schedule_id} has recurrence exceptions: {exceptions}")
+
+                    # 반복 일정 생성 (예외 일정을 고려)
                     events = generate_recurring_events(
                         start_date=start_date,
                         frequency=frequency,
                         interval=interval,
                         until=until,
                         count=count,
-                        requested_start=start_date_dt,
-                        requested_end=end_date_dt
+                        requested_start=requested_start,
+                        requested_end=requested_end,
+                        exceptions=exceptions  # 예외 일정 전달
                     )
 
                     # 날짜 리스트로 변환
@@ -145,7 +160,87 @@ async def list_schedules(
     finally:
         cur.close()
         close_db_connection(conn)
+
 ## 2-2. [ 조회 ] (side)개인스케줄 - 통합
+    """
+
+    보여줘야 할 내용
+    - start_date
+    - 일정 제목
+    - sid
+    - type : "group" or "personal"
+    - tags 
+    - end_date
+    - color
+
+    가져와야 할 내용
+    table 
+    - schedule
+    - recurrence
+    - recurrence_exception
+    - tag
+    - schedule_tag
+
+
+
+    * 모든것은 uid를 기준으로 필터링하여 진행.
+    1-1. tb_schedule 에서 id, title, color, recurrence(boolean), start_date, end_date를 추출해온다
+    1-2. tb_schedule에서 가져온 스케줄 중 recurrence가 true인 것들에한해 tb_recurrence에서 util, count, frequency,,,, 를 가져와 반복문과 selected_date의 month에 해당하는 반복 일정을 추출한다
+    1-3. tb_recurrence_exception에 fk에 해당하는 recurrence_id가   (tb_schedule에서 가져온 스케줄 중 recurrence가 true인 것들에한해 tb_recurrence에서 util, count, frequency,,,, 를 가져와 반복문과 selected_date의 month에 해당하는 반복 일정을 추출한다) 에 해당하는게 있다면 예외처리를 진행
+
+    위와 같은 처리를 통해 
+
+    {
+    "side_schedules": [
+        {
+        "start_date": "2024-07-01T10:00:00Z",
+        "schedules": [
+            {
+                "id": 1
+                "end_date": "2024-07-12T10:00:00Z",
+            "title": "Team Meeting",
+            "type" : "group"
+                    "color": "coral",
+            "tags": [
+                            { id: 1, name: "Client" },
+                            { id: 2, name: "Meeting"},
+                            ],
+            }
+        ]
+        },
+        {
+        "start_date": "2024-07-15T10:00:00Z",
+        "schedules": [
+            {
+                "id": 2
+                        "end_date": "2024-07-15T10:00:00Z",	        
+            "title": "Lunch with Team",
+            "type" : "personal"
+            "color": "green",
+            "tags": [
+                            { id: 1, name: "Client" },
+                            { id: 2, name: "Meeting"},
+                            ],
+            },
+            {
+                "id": 3
+                "end_date": "2024-07-16T10:00:00Z",        
+            "title": "Project Review",
+            "type" : "group"
+            "color": "blue",
+            "tags": [
+                        { id: 1, name: "Client" },
+                        { id: 2, name: "Meeting"},
+                        ],
+            }
+        ]
+        }
+    ],
+    }
+
+    와 같은 결과가 나온다
+    """
+
 
 ## 2-3. [ 조회 ] (detail)개인스케줄 - 일정조회
 
@@ -209,17 +304,17 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
             )
 
         # 반복 설정
-        if schedule.repeat:
+        if schedule.is_repeat:
             cur.execute(
                 """
                 INSERT INTO recurrence (frequency, interval, until, count, schedule_id)
                 VALUES (%s, %s, %s, %s, %s)
                 """,
                 (
-                    schedule.repeat.frequency,
-                    schedule.repeat.interval,
-                    schedule.repeat.until,
-                    schedule.repeat.count,
+                    schedule.repeat_frequency,
+                    schedule.repeat_interval,
+                    schedule.repeat_end_date,
+                    schedule.repeat_count,
                     schedule_id
                 )
             )
@@ -319,8 +414,8 @@ async def update_schedule(
                 cur.execute("INSERT INTO reminder (days_before, schedule_id) VALUES (%s, %s)", (reminder, sid))
 
         # 반복 일정 정보가 있는 경우
-        if schedule_update.repeat:
-            logger.info(f"Updating recurrence: frequency='{schedule_update.repeat.frequency}' interval={schedule_update.repeat.interval} until={schedule_update.repeat.until} count={schedule_update.repeat.count}")
+        if schedule_update.is_repeat:
+            logger.info(f"Updating recurrence: frequency='{schedule_update.repeat_frequency}' interval={schedule_update.repeat_interval} until={schedule_update.repeat_end_date} count={schedule_update.repeat_count}")
             cur.execute(
                 """
                 INSERT INTO recurrence (frequency, interval, until, count, schedule_id)
@@ -329,10 +424,10 @@ async def update_schedule(
                 SET frequency = EXCLUDED.frequency, interval = EXCLUDED.interval, until = EXCLUDED.until, count = EXCLUDED.count
                 """,
                 (
-                    schedule_update.repeat.frequency,
-                    schedule_update.repeat.interval,
-                    schedule_update.repeat.until,
-                    schedule_update.repeat.count,
+                    schedule_update.repeat_frequency,
+                    schedule_update.repeat_interval,
+                    schedule_update.repeat_end_date,
+                    schedule_update.repeat_count,
                     sid
                 )
             )
@@ -354,8 +449,6 @@ async def update_schedule(
 ## 2-6. [ 수정 ] 개인스케줄 -  일정정보삭제
 
 ## 2-7. [ 조회 ] 개인스케줄 - 알림
-
-## 2-8. =진행예정= total_groups 조회
 
 ##2-9.  total_tags 
 @router.get("/total-tags", response_model=TotalTags)
@@ -490,17 +583,17 @@ async def modify_repeat_schedule(
             logger.info(f"New schedule created with ID {new_schedule_id}")
             
                 # (신) 반복 일정 추가
-            if schedule_update.repeat:
+            if schedule_update.is_repeat:
                 cur.execute(
                     """
                     INSERT INTO recurrence (frequency, interval, until, count, schedule_id)
                     VALUES (%s, %s, %s, %s, %s)
                     """,
                     (
-                        schedule_update.repeat.frequency,
-                        schedule_update.repeat.interval,
-                        schedule_update.repeat.until,
-                        schedule_update.repeat.count,
+                        schedule_update.repeat_frequency,
+                        schedule_update.repeat_interval,
+                        schedule_update.repeat_end_date,
+                        schedule_update.repeat_count,
                         new_schedule_id
                     )
                 )
@@ -511,12 +604,12 @@ async def modify_repeat_schedule(
                 for reminder in schedule_update.reminders:
                     cur.execute(
                         """
-                        INSERT INTO reminder (minutes_before, schedule_id)
+                        INSERT INTO reminder (days_before, schedule_id)
                         VALUES (%s, %s)
                         """,
                         (reminder, new_schedule_id)
                     )
-                    logger.info(f"Reminder added: {reminder} minutes before for schedule ID {new_schedule_id}")
+                    logger.info(f"Reminder added: {reminder} days before for schedule ID {new_schedule_id}")
 
             logger.info(f"Schedule modification after_all completed for schedule ID {sid}")
 
@@ -532,10 +625,10 @@ async def modify_repeat_schedule(
                 WHERE schedule_id = %s
                 """,
                 (
-                    schedule_update.repeat.frequency,
-                    schedule_update.repeat.interval,
-                    schedule_update.repeat.until,
-                    schedule_update.repeat.count,
+                    schedule_update.repeat_frequency,
+                    schedule_update.repeat_interval,
+                    schedule_update.repeat_end_date,
+                    schedule_update.repeat_count,
                     sid
                 )
             )
