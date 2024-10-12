@@ -15,7 +15,7 @@ class LoginRequest(BaseModel):
     password: str
 
 @router.post("/login")
-async def login(login_data: LoginRequest):
+async def login(login_data: LoginRequest, response: Response):
     # 로그인 검증
     user = authenticate_user(login_data.username, login_data.password)
     if not user:
@@ -29,17 +29,17 @@ async def login(login_data: LoginRequest):
     access_token_expires = timedelta(minutes=30)
     access_token = create_access_token(data={"sub": user["username"], "uid": user["uid"]})
     
+    # JWT를 응답 헤더에 포함시킴
+    response.headers["Authorization"] = f"Bearer {access_token}"
     # JWT를 응답 본문에 포함시킴
     return {
         "success": True,
-        "access_token": access_token,
-        "token_type": "bearer",
         "username": user["username"],
         "uid": user["uid"]
     }
 
 @router.post("/token")
-async def login_for_access_token(login_data: LoginRequest):
+async def login_for_access_token(login_data: LoginRequest, response: Response):
     user = authenticate_user(login_data.username, login_data.password)
     if not user:
         raise HTTPException(
@@ -48,7 +48,16 @@ async def login_for_access_token(login_data: LoginRequest):
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token = create_access_token(data={"sub": user["username"], "uid": user["uid"]})
-    return {"access_token": access_token, "token_type": "bearer"}
+    
+    # JWT를 응답 헤더에 포함시킴
+    response.headers["Authorization"] = f"Bearer {access_token}"
+    
+    
+    return {
+        "success": True,
+        "username": user["username"],
+        "uid": user["uid"]
+    }
 
 @router.post("/logout")
 async def logout(token: str = Depends(oauth2_scheme)):

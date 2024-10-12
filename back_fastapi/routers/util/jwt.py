@@ -132,3 +132,56 @@ def invalidate_token(token: str):
     finally:
         cur.close()  # 커서 닫기
         close_db_connection(conn)  # 연결 풀에 반환
+        
+        
+        
+        
+
+
+
+## 개발자용 token
+def create_permanent_access_token(data: dict):
+    """
+    만료되지 않는 개발용 JWT 토큰을 생성하는 함수
+    :param data: JWT에 포함될 데이터 (예: 사용자 정보)
+    :return: JWT 토큰
+    """
+    to_encode = data.copy()
+    # 만료 시간이 없기 때문에 exp 클레임을 추가하지 않음
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    
+    # 디버깅용 출력
+    print(f'Permanent Token: {encoded_jwt}')
+    
+    # 만료되지 않는 토큰은 데이터베이스에 저장하지 않음 (필요한 경우 저장)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    save_token_to_db(encoded_jwt, data["uid"], expire)
+    return encoded_jwt
+
+
+def verify_permanent_token(token: str):
+    """
+    만료되지 않는 개발용 JWT 토큰을 검증하는 함수
+    :param token: 검증할 JWT 토큰 (문자열 형식)
+    :return: 검증된 토큰의 페이로드 (딕셔너리 형식)
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        # 블랙리스트 체크 (필요에 따라)
+        if is_token_blacklisted(token):
+            raise credentials_exception
+
+        # 만료 시간이 없는 개발용 토큰이므로 바로 페이로드 반환
+        return payload
+    except PyJWTError as e:
+        print(f"JWT Error: {e}")
+        raise credentials_exception
+
+# permanent_token = create_permanent_access_token({"uid": 81797281416100, "username": "user1"})
+# print(permanent_token)
