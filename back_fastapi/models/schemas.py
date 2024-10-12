@@ -107,6 +107,48 @@ class ScheduleResponseItem(BaseModel):
 
 # 스케줄 응답 스키마
 class ScheduleResponse(BaseModel):
-    schedules: List[ScheduleResponseItem] = Field(..., description="List of schedules matching the criteria")
+    title: str = Field(..., example="Meeting with Client", description="Title of the schedule")
+    type: str = Field(..., example="personal", description="Type of schedule")
+    description: str = Field(..., example="Discuss project details and deadlines", description="Description of the schedule")
+    importance: str = Field(..., example="high", description="Importance level of the schedule")
+    color: str = Field(..., example="pink", description="Color code of the schedule")
+    tags: List[Tag] = Field(..., description="List of associated tags")
+    start_date: datetime = Field(..., description="Start date and time of the schedule")
+    end_date: datetime = Field(..., description="End date and time of the schedule")
+    is_repeat: bool = Field(..., description="Indicates if the schedule is recurring")
+    repeat_frequency: Optional[str] = Field(None, description="Recurrence frequency")
+    repeat_end_option: Optional[str] = Field(None, description="Repeat end option if provided")
+    repeat_interval: Optional[int] = Field(None, description="Recurrence interval")
+    repeat_end_date: Optional[datetime] = Field(None, description="Recurrence end date")
+    repeat_count: Optional[int] = Field(None)
+    reminder: List[int] = Field(..., description="Reminder times in minutes before the event")
+    reminder_email_noti: bool = Field(False, description="Whether email notification for reminders is enabled")
+
+    @field_validator('reminder_email_noti')
+    def validate_reminder_email_noti(cls, value):
+        if not isinstance(value, bool):
+            raise ValueError('reminder_email_noti should be a boolean')
+        return value
 
 
+# Sidebar 일정 정보 스키마
+class SidebarScheduleItem(BaseModel):
+    id: int = Field(..., example=1, description="Unique ID of the schedule")
+    end_date: datetime = Field(..., example="2024-07-12T10:00:00Z", description="End date of the schedule in ISO 8601 format")
+    title: str = Field(..., example="Team Meeting", description="Title of the schedule")
+    color: str = Field(..., example="coral", description="Color of the schedule")
+    type: str = Field(..., example="group", description="Type of the schedule (group or personal)")
+    tags: List[Tag] = Field(..., description="List of associated tags")
+    # start_date: datetime = Field(..., example="2024-07-01T10:00:00Z", description="Start date of the schedule in ISO 8601 format")
+    
+
+
+# Sidebar 스케줄 그룹화 스키마
+class SidebarScheduleGroup(BaseModel):
+    start_date: datetime = Field(..., example="2024-07-01T10:00:00Z", description="Start date to group schedules")
+    schedules: List[SidebarScheduleItem] = Field(..., description="List of schedules for the specific date")
+
+
+# Sidebar 일정 조회 응답 스키마
+class SidebarScheduleResponse(BaseModel):
+    side_schedules: List[SidebarScheduleGroup] = Field(..., description="List of grouped schedules by start date")

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from models.schemas import Reminder, CreateScheduleResponse, CreateSchedule, ScheduleDate, ScheduleResponseItem, ScheduleResponse,UpdateSchedule, UpdateRepeatSchedule, TotalTags, Tag
+from models.schemas import Reminder, CreateScheduleResponse, CreateSchedule, ScheduleDate, ScheduleResponseItem, SidebarScheduleGroup, ScheduleResponse,UpdateSchedule, UpdateRepeatSchedule, TotalTags, Tag, SidebarScheduleResponse
 from routers.util.jwt import verify_token
 from db.db_conn import get_db_connection, close_db_connection
 from .util.auth import extract_user_id_from_token
@@ -7,7 +7,7 @@ from .util.utils import parse_iso_date, check_per_tags, check_color_list, genera
 from fastapi.security import OAuth2PasswordBearer
 import psycopg2
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import pytz
 
@@ -162,87 +162,216 @@ async def list_schedules(
         close_db_connection(conn)
 
 ## 2-2. [ 조회 ] (side)개인스케줄 - 통합
-    """
+@router.get("/sidebar", response_model=SidebarScheduleResponse)
+async def get_sidebar_schedules(
+    selected_date: str,
+    tag_ids: Optional[List[int]] = None,
+    token: str = Depends(oauth2_scheme)
+):
+    try:
+        uid = extract_user_id_from_token(token)
+    except HTTPException as e:
+        logger.error(f"HTTPException occurred: {e.detail}")
+        raise e
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal error occurred."
+        )
 
-    보여줘야 할 내용
-    - start_date
-    - 일정 제목
-    - sid
-    - type : "group" or "personal"
-    - tags 
-    - end_date
-    - color
+    # selected_date로부터 연도 및 월 추출
+    try:
+        selected_dt = datetime.strptime(selected_date, "%Y-%m-%dT%H:%M:%S")
+        selected_year = selected_dt.year
+        selected_month = selected_dt.month
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid selected_date format.")
 
-    가져와야 할 내용
-    table 
-    - schedule
-    - recurrence
-    - recurrence_exception
-    - tag
-    - schedule_tag
+    # 월의 첫날과 마지막 날 계산
+    first_day_of_month = selected_dt.replace(day=1)
+    next_month = (first_day_of_month + timedelta(days=32)).replace(day=1)
+    last_day_of_month = next_month - timedelta(days=1)
 
+    conn = get_db_connection()
+    cur = conn.cursor()
 
+    try:
+        # Schedule 데이터 조회 쿼리
+        query = """
+            SELECT s.id, s.title, s.start_date, s.end_date, s.color, 
+                   r.frequency, r.interval, r.until, r.count, 
+                   array_agg(st.tag_id) as tag_ids, array_agg(t.title) as tag_names
+            FROM schedule s
+            LEFT JOIN recurrence r ON s.id = r.schedule_id
+            LEFT JOIN schedule_tag st ON s.id = st.schedule_id
+            LEFT JOIN tag t ON st.tag_id = t.id
+            WHERE s.uid = %s
+            AND s.start_date >= %s
+            AND s.start_date <= %s
+            GROUP BY s.id, r.frequency, r.interval, r.until, r.count
+        """
+        params = [uid, first_day_of_month, last_day_of_month]
 
-    * 모든것은 uid를 기준으로 필터링하여 진행.
-    1-1. tb_schedule 에서 id, title, color, recurrence(boolean), start_date, end_date를 추출해온다
-    1-2. tb_schedule에서 가져온 스케줄 중 recurrence가 true인 것들에한해 tb_recurrence에서 util, count, frequency,,,, 를 가져와 반복문과 selected_date의 month에 해당하는 반복 일정을 추출한다
-    1-3. tb_recurrence_exception에 fk에 해당하는 recurrence_id가   (tb_schedule에서 가져온 스케줄 중 recurrence가 true인 것들에한해 tb_recurrence에서 util, count, frequency,,,, 를 가져와 반복문과 selected_date의 month에 해당하는 반복 일정을 추출한다) 에 해당하는게 있다면 예외처리를 진행
+        # 태그 필터링 추가
+        if tag_ids:
+            query += " HAVING array_agg(st.tag_id) && %s"
+            params.append(tag_ids)
 
-    위와 같은 처리를 통해 
+        cur.execute(query, params)
+        rows = cur.fetchall()
 
-    {
-    "side_schedules": [
-        {
-        "start_date": "2024-07-01T10:00:00Z",
-        "schedules": [
-            {
-                "id": 1
-                "end_date": "2024-07-12T10:00:00Z",
-            "title": "Team Meeting",
-            "type" : "group"
-                    "color": "coral",
-            "tags": [
-                            { id: 1, name: "Client" },
-                            { id: 2, name: "Meeting"},
-                            ],
-            }
+        schedules_by_date = {}
+
+        for row in rows:
+            schedule_id, title, start_date, end_date, color, frequency, interval, until, count, tag_id_list, tag_name_list = row
+            is_group = False
+            start_date = ensure_utc(start_date)
+            end_date = ensure_utc(end_date)
+            until = ensure_utc(until) if until else None
+
+            schedule_type = "group" if is_group else "personal"
+
+            # Recurrence 예외 처리
+            cur.execute("""
+                SELECT exception_date FROM recurrence_exception
+                WHERE recurrence_id = (
+                    SELECT id FROM recurrence WHERE schedule_id = %s
+                )
+            """, [schedule_id])
+            exception_rows = cur.fetchall()
+            exceptions = {ensure_utc(exception_date[0]) for exception_date in exception_rows}
+
+            # Recurrence 처리
+            if frequency:
+                interval = interval or 1
+                until = until or last_day_of_month
+
+                events = generate_recurring_events(
+                    start_date=start_date,
+                    frequency=frequency,
+                    interval=interval,
+                    until=until,
+                    count=count,
+                    requested_start=first_day_of_month,
+                    requested_end=last_day_of_month,
+                    exceptions=exceptions
+                )
+
+                for event in events:
+                    event = ensure_utc(event)
+                    if event not in schedules_by_date:
+                        schedules_by_date[event] = []
+
+                    schedules_by_date[event].append({
+                        "id": schedule_id,
+                        "title": title,
+                        # "start_date": event,
+                        "end_date": end_date,
+                        "color": color,
+                        "type": schedule_type,
+                        "tags": [{"id": tag_id, "name": tag_name} for tag_id, tag_name in zip(tag_id_list, tag_name_list) if tag_id is not None and tag_name is not None]
+                    })
+            else:
+                # Non-recurring event 처리
+                if start_date not in schedules_by_date:
+                    schedules_by_date[start_date] = []
+
+                schedules_by_date[start_date].append({
+                    "id": schedule_id,
+                    "title": title,
+                    # "start_date": start_date,
+                    "end_date": end_date,
+                    "color": color,
+                    "type": schedule_type,
+                    "tags": [{"id": tag_id, "name": tag_name} for tag_id, tag_name in zip(tag_id_list, tag_name_list) if tag_id is not None and tag_name is not None]
+                })
+
+        # Response로 side_schedules 변환
+        side_schedules = [
+            SidebarScheduleGroup(
+                start_date=start_date,
+                schedules=schedules
+            )
+            for start_date, schedules in sorted(schedules_by_date.items())
         ]
-        },
-        {
-        "start_date": "2024-07-15T10:00:00Z",
-        "schedules": [
-            {
-                "id": 2
-                        "end_date": "2024-07-15T10:00:00Z",	        
-            "title": "Lunch with Team",
-            "type" : "personal"
-            "color": "green",
-            "tags": [
-                            { id: 1, name: "Client" },
-                            { id: 2, name: "Meeting"},
-                            ],
-            },
-            {
-                "id": 3
-                "end_date": "2024-07-16T10:00:00Z",        
-            "title": "Project Review",
-            "type" : "group"
-            "color": "blue",
-            "tags": [
-                        { id: 1, name: "Client" },
-                        { id: 2, name: "Meeting"},
-                        ],
-            }
-        ]
-        }
-    ],
-    }
 
-    와 같은 결과가 나온다
-    """
+        return SidebarScheduleResponse(side_schedules=side_schedules)
+
+    except Exception as e:
+        logger.error(f"Error fetching schedules: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve sidebar schedules."
+        )
+    finally:
+        cur.close()
+        close_db_connection(conn)
 
 
-## 2-3. [ 조회 ] (detail)개인스케줄 - 일정조회
+
+##2-9.  total_tags 
+@router.get("/total-tags", response_model=TotalTags)
+async def total_tags(token: str = Depends(oauth2_scheme)):
+    # JWT 토큰 검증 및 사용자 ID 추출
+    try:
+        print("Extracting user ID from token")  # 로깅 추가
+        uid = extract_user_id_from_token(token)
+        print(f"User ID extracted: {uid}")  # 로깅 추가
+    except HTTPException as e:
+        print(f"HTTPException occurred during token extraction: {e.detail}")
+        raise e
+    except Exception as e:
+        print(f"An unexpected error occurred during token extraction: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal error occurred during token validation."
+        )
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # 개인 태그 가져오기
+        print(f"Fetching personal tags for user ID: {uid}")  # 로깅 추가
+        personal_tags = check_per_tags(uid)
+        print(f"Personal tags fetched: {personal_tags}")  # 로깅 추가
+
+        # 검증: personal_tags가 올바르게 반환되는지 확인
+        if not personal_tags:
+            print(f"No personal tags found for user ID: {uid}")  # 로깅 추가
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No personal tags found."
+            )
+
+        # per_tags 생성
+        print("Formatting personal tags")  # 로깅 추가
+        per_tags = [Tag(id=t[0], name=t[1]) for t in personal_tags]
+        # print(f"Formatted per_tags: {per_tags}")  # 로깅 추가
+
+        # 그룹 정보는 아직 정의되지 않았으므로 빈 리스트로 반환
+        group_list = []
+        # print("Group list initialized as empty.")  # 로깅 추가
+
+        # TotalTags 객체 생성
+        print("Creating TotalTags object")  # 로깅 추가
+        total_tags = TotalTags(per_tags=per_tags, groups=group_list)
+        # print(f"TotalTags object created: {total_tags}")  # 로깅 추가
+        
+        # TotalTags 객체를 직접 반환
+        # print("Returning TotalTags object")  # 로깅 추가
+        return total_tags
+
+    except Exception as e:
+        print(f"Error fetching total tags: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch total tags."
+        )
+    finally:
+        # print("Closing database connection")  # 로깅 추가
+        cur.close()
+        close_db_connection(conn)
 
 ## 2-4. [생성] 개인스케줄 - 일정생성
 @router.post("/create-schedule", response_model=CreateScheduleResponse)
@@ -341,6 +470,98 @@ async def create_schedule(schedule: CreateSchedule, token: str = Depends(oauth2_
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create schedule",
+        )
+    finally:
+        cur.close()
+        close_db_connection(conn)
+
+## 2-3. [ 조회 ] (detail)개인스케줄 - 일정조회
+@router.get("/{sid}", response_model=ScheduleResponse)
+async def get_schedule(sid: int, token: str = Depends(oauth2_scheme)):
+    try:
+        # JWT 토큰 검증 및 사용자 ID 추출
+        uid = extract_user_id_from_token(token)
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # 개인 스케줄 데이터 조회
+        cur.execute(
+            """
+            SELECT s.title, s.note, s.color, s.start_date, s.end_date, s.important, 
+                   r.frequency, r.interval, r.until, r.count, 
+                   COALESCE((
+                       SELECT array_agg(days_before) 
+                       FROM reminder WHERE schedule_id = s.id
+                   ), '{}') as reminders, 
+                   EXISTS(
+                       SELECT 1 FROM reminder WHERE schedule_id = s.id AND email = true
+                   ) as reminder_email_noti
+            FROM schedule s
+            LEFT JOIN recurrence r ON s.id = r.schedule_id
+            WHERE s.id = %s AND s.uid = %s
+            """,
+            (sid, uid)
+        )
+
+        schedule = cur.fetchone()
+
+        if not schedule:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Schedule not found"
+            )
+
+        # 스케줄 정보 매핑
+        title, note, color, start_date, end_date, important, repeat_frequency, repeat_interval, repeat_end_date, repeat_count, reminders, reminder_email_noti = schedule
+        print(title, note, color, start_date, end_date, important, repeat_frequency, repeat_interval, repeat_end_date, repeat_count, reminders, reminder_email_noti)
+        # 태그 데이터 조회
+        cur.execute(
+            """
+            SELECT t.id, t.title 
+            FROM tag t
+            JOIN schedule_tag st ON t.id = st.tag_id
+            WHERE st.schedule_id = %s
+            """,
+            (sid,)
+        )
+        tags = cur.fetchall()
+        tag_list = [{"id": tag_id, "name": tag_name} for tag_id, tag_name in tags]
+        if repeat_count:
+            repeat_end_option = "count"
+            repeat_end_date = None
+        elif repeat_end_date:
+            repeat_end_option = "end_date"
+            repeat_count = None
+        else:
+            repeat_end_option = None
+        # 반환할 데이터 구조 작성
+        response_data = {
+            "title": title,
+            "type": "personal",  # 타입은 "personal"로 고정
+            "description": note,
+            "importance": important,
+            "color": color,
+            "tags": tag_list,
+            "start_date": start_date,
+            "end_date": end_date,
+            "is_repeat": repeat_frequency is not None,
+            "repeat_end_option": repeat_end_option,
+            "repeat_frequency": repeat_frequency,
+            "repeat_interval": repeat_interval,
+            "repeat_end_date": repeat_end_date,
+            "repeat_count" : repeat_count,
+            "reminder": reminders,
+            "reminder_email_noti": reminder_email_noti
+        }
+
+        return response_data
+
+    except Exception as e:
+        print(f"Error fetching schedule: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch schedule",
         )
     finally:
         cur.close()
@@ -450,51 +671,6 @@ async def update_schedule(
 
 ## 2-7. [ 조회 ] 개인스케줄 - 알림
 
-##2-9.  total_tags 
-@router.get("/total-tags", response_model=TotalTags)
-async def total_tags(
-    token: str = Depends(oauth2_scheme)
-):
-    # JWT 토큰 검증 및 사용자 ID 추출
-    try:
-        uid = extract_user_id_from_token(token)
-    except HTTPException as e:
-        print(f"HTTPException occurred: {e.detail}")
-        raise e
-    except Exception as e:
-        print(f"An unexpected error occurred: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An internal error occurred."
-        )
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        # 개인 태그 가져오기
-        personal_tags = check_per_tags(uid)
-        per_tags = [Tag(id=t[0], name=t[1]) for t in personal_tags]
-
-        # 그룹 정보는 아직 정의되지 않았으므로 빈 리스트로 반환
-        group_list = []
-
-        # TotalTags 객체 생성
-        total_tags = TotalTags(per_tags=per_tags, groups=group_list)
-        
-        # TotalTags 객체를 직접 반환
-        return total_tags
-    except Exception as e:
-        print(f"Error fetching total tags: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch total tags."
-        )
-    finally:
-        cur.close()
-        close_db_connection(conn)
-        
-        
-        
 
 
 ## 2-10. (detail) 개인 반복 스케줄 - 일정정보
