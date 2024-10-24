@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from models.schemas import Reminder, CreateScheduleResponse, CreateSchedule, ScheduleDate, ScheduleResponseItem, SidebarScheduleGroup, ScheduleResponse,UpdateSchedule, UpdateRepeatSchedule, TotalTags, Tag, SidebarScheduleResponse
 from routers.util.jwt import verify_token
 from db.db_conn import get_db_connection, close_db_connection
@@ -165,9 +165,16 @@ async def list_schedules(
 @router.get("/sidebar", response_model=SidebarScheduleResponse)
 async def get_sidebar_schedules(
     selected_date: str,
-    tag_ids: Optional[List[int]] = None,
+    tag_ids: Optional[List[int]] = Query(None),
     token: str = Depends(oauth2_scheme)
 ):
+    # tag_ids가 전달되지 않으면 None, 여러 개 전달되면 리스트로 처리됨
+    if tag_ids is None:
+        # tag_ids가 없는 경우 처리
+        print("No tag_ids provided")
+    else:
+        # tag_ids가 있는 경우 처리
+        print(f"tag_ids: {tag_ids}")
     try:
         uid = extract_user_id_from_token(token)
     except HTTPException as e:
@@ -179,7 +186,7 @@ async def get_sidebar_schedules(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An internal error occurred."
         )
-
+    
     # selected_date로부터 연도 및 월 추출
     try:
         selected_dt = datetime.strptime(selected_date, "%Y-%m-%dT%H:%M:%S")
@@ -200,8 +207,8 @@ async def get_sidebar_schedules(
         # Schedule 데이터 조회 쿼리
         query = """
             SELECT s.id, s.title, s.start_date, s.end_date, s.color, 
-                   r.frequency, r.interval, r.until, r.count, 
-                   array_agg(st.tag_id) as tag_ids, array_agg(t.title) as tag_names
+                r.frequency, r.interval, r.until, r.count, 
+                array_agg(DISTINCT st.tag_id) as tag_ids, array_agg(DISTINCT t.title) as tag_names
             FROM schedule s
             LEFT JOIN recurrence r ON s.id = r.schedule_id
             LEFT JOIN schedule_tag st ON s.id = st.schedule_id
@@ -211,16 +218,22 @@ async def get_sidebar_schedules(
             AND s.start_date <= %s
             GROUP BY s.id, r.frequency, r.interval, r.until, r.count
         """
+
         params = [uid, first_day_of_month, last_day_of_month]
 
         # 태그 필터링 추가
         if tag_ids:
-            query += " HAVING array_agg(st.tag_id) && %s"
-            params.append(tag_ids)
+            # print(f'tag = {tag_ids}')
+            query += " HAVING %s = ANY(array_agg(st.tag_id))"
+            params.append(tag_ids[0])  # 하나의 태그만 비교할 때 (리스트가 아닌 단일 값)
 
         cur.execute(query, params)
         rows = cur.fetchall()
 
+        # logger.debug(f"fetch rows : {rows}")
+        # for row in rows :
+        #     print(f'fetch rows = {row}')
+        
         schedules_by_date = {}
 
         for row in rows:
@@ -668,6 +681,25 @@ async def update_schedule(
             close_db_connection(conn)
         
 ## 2-6. [ 수정 ] 개인스케줄 -  일정정보삭제
+"""
+delete
+api/per-scehdule/{sid}
+
+
+request
+parameter 
+- only 
+    - 일반일정 삭제 프로세스 
+    - 반복일정에서 단일 스케줄 삭제
+- after_all
+    - 반복 일정에서 특정 시간 이후 스케줄 삭제.
+        이전 일정은 유지
+- all
+    - 반복 일정 전체 스케줄 삭제
+
+일정 삭제 프로세스
+
+"""
 
 ## 2-7. [ 조회 ] 개인스케줄 - 알림
 
